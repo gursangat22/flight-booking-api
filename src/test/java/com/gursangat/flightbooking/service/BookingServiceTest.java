@@ -6,6 +6,7 @@ import com.gursangat.flightbooking.model.Booking;
 import com.gursangat.flightbooking.model.Flight;
 import com.gursangat.flightbooking.repository.BookingRepository;
 import com.gursangat.flightbooking.repository.FlightRepository;
+import com.gursangat.flightbooking.repository.IdempotencyStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
@@ -31,12 +32,12 @@ class BookingServiceTest {
         flightRepository.save(new Flight("AI101", 3));
         flightRepository.save(new Flight("AI202", 50));
         flightRepository.save(new Flight("AI303", 1));
-        bookingService = new BookingService(flightRepository, new BookingRepository());
+        bookingService = new BookingService(flightRepository, new BookingRepository(), new IdempotencyStore());
     }
 
     @Test
     void booksSeatsOnAKnownFlight() {
-        Booking booking = bookingService.book("AI202", "Alice", 2);
+        Booking booking = bookingService.book("AI202", "Alice", 2, null).booking();
 
         assertNotNull(booking.getId());
         assertEquals("AI202", booking.getFlightNumber());
@@ -46,25 +47,25 @@ class BookingServiceTest {
     @Test
     void rejectsUnknownFlight() {
         assertThrows(FlightNotFoundException.class,
-                () -> bookingService.book("ZZ999", "Bob", 1));
+                () -> bookingService.book("ZZ999", "Bob", 1, null));
     }
 
     @Test
     void rejectsOverbooking() {
         // AI303 has capacity 1
-        bookingService.book("AI303", "Carol", 1);
+        bookingService.book("AI303", "Carol", 1, null);
 
         assertThrows(SeatsUnavailableException.class,
-                () -> bookingService.book("AI303", "Dave", 1));
+                () -> bookingService.book("AI303", "Dave", 1, null));
     }
 
     @Test
     void fillsFlightExactlyToCapacity() {
         // AI101 has capacity 3
-        bookingService.book("AI101", "P1", 3);
+        bookingService.book("AI101", "P1", 3, null);
 
         assertThrows(SeatsUnavailableException.class,
-                () -> bookingService.book("AI101", "P2", 1));
+                () -> bookingService.book("AI101", "P2", 1, null));
     }
 
     @Test
@@ -79,7 +80,7 @@ class BookingServiceTest {
             pool.submit(() -> {
                 try {
                     start.await();
-                    bookingService.book("AI202", "Passenger", 1);
+                    bookingService.book("AI202", "Passenger", 1, null);
                     successes.incrementAndGet();
                 } catch (SeatsUnavailableException ignored) {
                     // expected once the flight is full
