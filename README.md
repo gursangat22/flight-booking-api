@@ -212,6 +212,62 @@ dto/          Request/response payloads with validation
 exception/    Custom exceptions + global handler mapping to HTTP status codes
 ```
 
+## Design notes: SOLID principles & patterns
+
+The code is small on purpose, but it follows a few well-known principles and
+patterns. They are listed here with the exact place in the code they show up, so
+each one is concrete rather than a buzzword.
+
+### SOLID
+
+- **Single Responsibility (S)** — every class has one reason to change:
+  `BookingController` only does HTTP (parse request, choose status code),
+  `BookingService` only does business logic, the `*Repository` classes only store
+  data, `Flight`/`Booking` only hold domain state, the DTOs only describe the wire
+  format, and `GlobalExceptionHandler` only maps exceptions to HTTP responses.
+- **Open/Closed (O)** — `GlobalExceptionHandler` is open for extension, closed for
+  modification: handling a new error type means *adding* an `@ExceptionHandler`
+  method, not editing existing ones. The same is true of adding a new endpoint or
+  a new repository.
+- **Liskov Substitution (L)** — `FlightNotFoundException` and
+  `SeatsUnavailableException` are true subtypes of `RuntimeException` and behave
+  correctly anywhere a `RuntimeException` is expected (e.g. Spring's exception
+  handling), so substituting them changes nothing for the caller.
+- **Interface Segregation (I)** — clients never depend on more than they need:
+  request and response are **separate DTOs** (`BookingRequest` vs
+  `BookingResponse`) instead of one fat object, so the input contract and the
+  output contract can evolve independently.
+- **Dependency Inversion (D)** — `BookingService` and `BookingController` receive
+  their collaborators through **constructor injection** (wired by Spring) rather
+  than constructing them, so a high-level class never news-up its dependencies and
+  collaborators can be swapped (e.g. with mocks in tests).
+
+> Honest note: I deliberately did **not** introduce interfaces in front of the
+> repositories. For a service this size that would be abstraction for its own sake
+> (YAGNI). If a second implementation were ever needed (e.g. a Redis-backed store),
+> extracting a `FlightRepository` interface at that point is a one-minute change and
+> the constructor injection above already makes the swap painless.
+
+### Design patterns
+
+- **Layered architecture** — `controller → service → repository → model`. Each
+  layer only talks to the one below it; HTTP concerns never leak into the domain.
+- **Repository pattern** — `FlightRepository`, `BookingRepository` and
+  `IdempotencyStore` hide *how* data is stored behind simple methods, so today's
+  in-memory maps could become a database tomorrow without touching the service.
+- **DTO pattern** — `BookingRequest`/`BookingResponse` decouple the public API
+  shape from the internal `Booking` model (and carry the validation rules).
+- **Dependency Injection / IoC** — Spring constructs and wires the beans.
+- **Information Expert + "Tell, Don't Ask"** — the no-overbooking invariant lives
+  in `Flight.reserve(seats)`, the object that actually owns `capacity` and
+  `bookedSeats`. The service *tells* the flight to reserve rather than reading its
+  fields and deciding externally, which is also what makes the operation atomic.
+- **Memoization for idempotency** — `IdempotencyStore.computeIfAbsent` computes a
+  booking once per key and returns the cached result on repeats; this is the
+  pattern that gives the at-most-once guarantee.
+- **Immutable value objects** — `BookingResult` is a `record`, and `Booking`'s
+  fields are `final`, so results can't be mutated after creation.
+
 ## What I'd improve with more time
 
 The current code intentionally stays simple and within the brief (single instance,
