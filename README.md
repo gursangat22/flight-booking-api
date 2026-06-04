@@ -174,6 +174,33 @@ Two correctness concerns are handled explicitly:
 Without an `Idempotency-Key`, each request is treated as a new booking (the key
 is opt-in).
 
+## Scaling beyond a single instance (when to add Redis)
+
+Per the brief this is a **single instance with in-memory storage**, so no Redis or
+database is used — and deliberately so. Both correctness guarantees above rely on
+**in-process** primitives that only hold inside one JVM:
+
+- no-overbooking uses each `Flight`'s intrinsic lock;
+- idempotency uses an in-process `ConcurrentHashMap`.
+
+The moment you run **more than one instance behind a load balancer**, those
+in-process guarantees no longer hold across the fleet: two instances could each
+sell the "last" seat, and the same `Idempotency-Key` could create one booking per
+instance. That is the point at which I would introduce a shared, atomic store —
+**Redis** is the natural fit:
+
+| Concern            | Single instance (current)        | Multi-instance (would add Redis)                          |
+|--------------------|----------------------------------|-----------------------------------------------------------|
+| No overbooking     | `synchronized Flight.reserve()`  | Atomic seat counter via Redis `DECRBY` / Lua script, or a DB row with a `CHECK`/conditional update |
+| Idempotency        | in-process `computeIfAbsent`     | `SET <key> <bookingId> NX EX <ttl>` so the first writer wins cluster-wide, with a TTL for cleanup |
+| Cross-step locking | not needed                       | Redis distributed lock (Redlock) only if multiple keys must be coordinated atomically |
+
+Redis would also give the idempotency store a natural **TTL/eviction** (the
+in-memory map currently grows unbounded). Until the service actually needs to
+scale out, adding Redis would be unnecessary infrastructure and extra failure
+modes — so it is intentionally left out here and called out as the first thing to
+add when scaling past one instance.
+
 ## Project structure
 
 ```
