@@ -214,18 +214,65 @@ exception/    Custom exceptions + global handler mapping to HTTP status codes
 
 ## What I'd improve with more time
 
-- **Persistence** — swap the in-memory maps for a real datastore so bookings
-  survive a restart. The idempotency invariant would then move to a unique
-  constraint / atomic upsert instead of an in-process map.
-- **Idempotency-store hardening** — the key store currently grows unbounded and
-  lives only in this instance. With more time: add a TTL / eviction policy,
-  validate that the same key is not reused with a *different* request body
-  (return `422`), and back it with a shared store so it holds across instances.
-- **Booking lifecycle** — cancellation (freeing seats) and a fetch-by-id endpoint.
-- **Lock granularity** — the per-flight intrinsic lock is correct for a single
-  instance but serialises bookings for a given flight; a striped lock or an atomic
-  counter would scale better under heavy contention, and a distributed lock would
-  be required across multiple instances.
-- **API polish** — OpenAPI/Swagger docs, pagination, and seat-level (not just
-  count-level) inventory.
-- **Observability** — structured logging, metrics, and tracing around bookings.
+The current code intentionally stays simple and within the brief (single instance,
+in-memory, booking only). These are the things I consciously left out and *why*,
+along with how I would approach each one — in rough priority order.
+
+### 1. Persistence (durability)
+**What's there now:** flights, bookings and idempotency keys live in
+`ConcurrentHashMap`s, so everything is lost on restart.
+**Why it's fine for this exercise:** the brief explicitly says in-memory only, and
+it keeps the project runnable with zero setup.
+**What I'd do:** put bookings and seat inventory in a database (e.g. Postgres). The
+no-overbooking rule would then be enforced by the database itself — either a row
+with a conditional `UPDATE ... WHERE booked_seats + :n <= capacity` (and check the
+affected-row count) or a `CHECK` constraint — instead of an in-memory lock. That
+also makes the rule correct even if the app restarts mid-flight.
+
+### 2. Idempotency-store hardening
+**What's there now:** an `Idempotency-Key` maps to a booking in an in-process map.
+**Two gaps I'm aware of:**
+- The map **grows forever** — there's no expiry. I'd add a **TTL/eviction** (keys
+  only need to live as long as a client might retry, e.g. 24h).
+- If a client **reuses the same key with a *different* body** (e.g. different flight
+  or seat count), the current code silently returns the original booking. Stricter
+  behaviour is to detect the mismatch and return **422 Unprocessable Entity**, so a
+  key can't be accidentally reused for a different request.
+**What I'd do:** store the request fingerprint alongside the key, add a TTL, and (when
+multi-instance) move it to a shared store — see *Scaling beyond a single instance*.
+
+### 3. Booking lifecycle (more of the domain)
+**What's there now:** you can only create a booking.
+**What I'd add:** the rest of the natural lifecycle — **cancel a booking** (which
+frees the seats back to the flight) and a **GET /api/bookings/{id}** to fetch one.
+The brief said retrieval isn't required, so I left it out, but in a real system
+cancellation is what makes the seat count meaningful over time.
+
+### 4. Concurrency model (only matters at higher scale)
+**What's there now:** each `Flight` is guarded by its own intrinsic lock, which is
+**correct** but serialises all bookings *for the same flight*.
+**Why it's fine now:** for a single instance and realistic traffic this is more than
+enough, and it's the simplest thing that's provably correct.
+**What I'd do if it became a bottleneck:** replace the lock with an atomic seat
+counter (e.g. `AtomicInteger` with a compare-and-set reserve loop) so bookings for
+the same flight don't block each other; and across multiple instances, move the
+invariant to Redis/DB as described in the scaling section.
+
+### 5. API & developer experience
+- **OpenAPI/Swagger** docs so the contract is browsable and testable from a UI.
+- **Seat-level inventory** (specific seat numbers) instead of just a count, if the
+  business needs seat selection.
+- **Consistent error model** — the error body is already structured; I'd formalise
+  it (e.g. RFC 7807 `application/problem+json`).
+
+### 6. Observability & operations
+**What's there now:** default Spring Boot logging only.
+**What I'd add:** structured request logging, metrics (bookings created/rejected,
+seats remaining per flight) via Micrometer/Actuator, and tracing — so in production
+you can answer "why did this booking fail?" and "which flights are filling up?".
+
+> Summary for discussion: the design deliberately favours **correctness and clarity
+> over features**. The two hard parts of a booking system — *not overbooking* and
+> *not double-charging on retries* — are both solved and tested. Everything above is
+> about durability, scale, and breadth of the domain, none of which the brief asked
+> for but all of which I can reason about.
