@@ -1,5 +1,6 @@
 package com.gursangat.flightbooking.controller;
 
+import com.jayway.jsonpath.JsonPath;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -45,6 +46,29 @@ class BookingControllerTest {
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("{\"flightNumber\":\"\",\"passengerName\":\"Bob\",\"seats\":0}"))
                 .andExpect(status().isBadRequest());
+    }
+
+    @Test
+    void replayWithSameIdempotencyKeyReturns200AndSameBooking() throws Exception {
+        String body = "{\"flightNumber\":\"AI404\",\"passengerName\":\"Alice\",\"seats\":1}";
+
+        // First request creates the booking -> 201 Created
+        String created = mockMvc.perform(post("/api/bookings")
+                        .header("Idempotency-Key", "abc-123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isCreated())
+                .andReturn().getResponse().getContentAsString();
+
+        String bookingId = JsonPath.read(created, "$.bookingId");
+
+        // Same key replays the original booking -> 200 OK, identical bookingId
+        mockMvc.perform(post("/api/bookings")
+                        .header("Idempotency-Key", "abc-123")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(body))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.bookingId").value(bookingId));
     }
 
     @Test

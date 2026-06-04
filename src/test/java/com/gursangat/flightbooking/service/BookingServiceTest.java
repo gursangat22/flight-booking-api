@@ -10,6 +10,8 @@ import com.gursangat.flightbooking.repository.IdempotencyStore;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import java.util.Set;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -17,6 +19,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
@@ -66,6 +70,61 @@ class BookingServiceTest {
 
         assertThrows(SeatsUnavailableException.class,
                 () -> bookingService.book("AI101", "P2", 1, null));
+    }
+
+    @Test
+    void sameIdempotencyKeyReturnsSameBookingAndConsumesSeatsOnce() {
+        BookingResult first = bookingService.book("AI202", "Alice", 2, "key-123");
+        BookingResult second = bookingService.book("AI202", "Alice", 2, "key-123");
+
+        assertTrue(first.created());
+        assertFalse(second.created()); // replayed, not created again
+        assertEquals(first.booking().getId(), second.booking().getId());
+
+        // Only the first booking consumed seats: 50 - 2 = 48 remain, not 46.
+        assertEquals(48, flightRepository.findByFlightNumber("AI202").orElseThrow().getAvailableSeats());
+    }
+
+    @Test
+    void differentIdempotencyKeysCreateDistinctBookings() {
+        BookingResult a = bookingService.book("AI202", "Alice", 1, "key-a");
+        BookingResult b = bookingService.book("AI202", "Bob", 1, "key-b");
+
+        assertNotEquals(a.booking().getId(), b.booking().getId());
+        assertEquals(48, flightRepository.findByFlightNumber("AI202").orElseThrow().getAvailableSeats());
+    }
+
+    @Test
+    void concurrentRequestsWithSameKeyCreateExactlyOneBooking() throws InterruptedException {
+        int attempts = 50;
+        ExecutorService pool = Executors.newFixedThreadPool(16);
+        CountDownLatch start = new CountDownLatch(1);
+        AtomicInteger createdCount = new AtomicInteger();
+        Set<String> bookingIds = ConcurrentHashMap.newKeySet();
+
+        for (int i = 0; i < attempts; i++) {
+            pool.submit(() -> {
+                try {
+                    start.await();
+                    BookingResult result = bookingService.book("AI202", "Alice", 1, "same-key");
+                    bookingIds.add(result.booking().getId());
+                    if (result.created()) {
+                        createdCount.incrementAndGet();
+                    }
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                }
+            });
+        }
+
+        start.countDown();
+        pool.shutdown();
+        assertTrue(pool.awaitTermination(10, TimeUnit.SECONDS));
+
+        assertEquals(1, createdCount.get());   // booking created exactly once
+        assertEquals(1, bookingIds.size());    // everyone saw the same booking
+        // Only one seat consumed despite 50 concurrent calls.
+        assertEquals(49, flightRepository.findByFlightNumber("AI202").orElseThrow().getAvailableSeats());
     }
 
     @Test
