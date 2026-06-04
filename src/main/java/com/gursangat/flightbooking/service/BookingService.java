@@ -32,11 +32,11 @@ public class BookingService {
         Flight flight = flightRepository.findByFlightNumber(flightNumber)
                 .orElseThrow(() -> new FlightNotFoundException(flightNumber));
 
-        if (flight.getAvailableSeats() < seats) {
+        // Atomic check-and-reserve inside the model; prevents the overbooking
+        // race the previous check-then-set version was exposed to.
+        if (!flight.reserve(seats)) {
             throw new SeatsUnavailableException(flightNumber, seats, flight.getAvailableSeats());
         }
-
-        flight.setBookedSeats(flight.getBookedSeats() + seats);
 
         Booking booking = new Booking(
                 UUID.randomUUID().toString(),

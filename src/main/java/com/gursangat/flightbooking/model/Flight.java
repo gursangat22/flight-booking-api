@@ -24,15 +24,28 @@ public class Flight {
         return capacity;
     }
 
-    public int getBookedSeats() {
+    public synchronized int getBookedSeats() {
         return bookedSeats;
     }
 
-    public void setBookedSeats(int bookedSeats) {
-        this.bookedSeats = bookedSeats;
+    public synchronized int getAvailableSeats() {
+        return capacity - bookedSeats;
     }
 
-    public int getAvailableSeats() {
-        return capacity - bookedSeats;
+    /**
+     * Atomically reserves the requested number of seats if enough are available.
+     * Performing the check-and-reserve under the flight's intrinsic lock makes
+     * this safe against concurrent booking requests, which is what actually
+     * prevents overbooking — a check followed by a separate write would let two
+     * callers both pass the check and oversell the flight.
+     *
+     * @return true if the seats were reserved, false if there was not enough room
+     */
+    public synchronized boolean reserve(int seats) {
+        if (seats > capacity - bookedSeats) {
+            return false;
+        }
+        bookedSeats += seats;
+        return true;
     }
 }
