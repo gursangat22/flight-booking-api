@@ -43,11 +43,16 @@ public class BookingService {
             return new BookingResult(createBooking(flightNumber, passengerName, seats), true);
         }
 
+        // Fingerprint of the request: lets the store tell a genuine retry (same
+        // key, same body -> replay) apart from a key reused for a different
+        // request (same key, different body -> reject).
+        String requestFingerprint = flightNumber + "|" + passengerName + "|" + seats;
+
         // created[0] is flipped only by the thread whose supplier actually runs;
         // concurrent callers with the same key block, then read the stored booking
         // with created == false. This keeps the duplicate-suppression race-free.
         boolean[] created = {false};
-        Booking booking = idempotencyStore.computeIfAbsent(idempotencyKey.trim(), () -> {
+        Booking booking = idempotencyStore.computeIfAbsent(idempotencyKey.trim(), requestFingerprint, () -> {
             created[0] = true;
             return createBooking(flightNumber, passengerName, seats);
         });

@@ -4,6 +4,16 @@ A small REST API for a flight ticket booking system, built with **Spring Boot 3*
 
 It does one thing: book seats on a known flight, without ever overbooking it.
 
+## How this was built (AI prompts & process)
+
+This was built AI-first, as the exercise expects.
+
+- **Step 1 (AI):** every iteration was driven by an AI prompt, and **each prompt is
+  recorded in its git commit message** — run `git log` to see all of them, in order.
+- **Step 2 (manual):** the manual improvements are the commits titled
+  *"Manual improvements (Step 2) …"* — these explain, in plain language, what I
+  changed by hand, why, and what I'd still fix with more time.
+
 ## Scope & assumptions
 
 The brief intentionally left the detailed spec open, so the following reasonable
@@ -79,10 +89,11 @@ Optional header:
 | Outcome                         | HTTP status        |
 |---------------------------------|--------------------|
 | Booking created                 | `201 Created` (+ `Location` header) |
-| Booking replayed (same `Idempotency-Key`) | `200 OK` (+ `Location` header) |
+| Booking replayed (same `Idempotency-Key`, same body) | `200 OK` (+ `Location` header) |
 | Invalid body (missing fields, `seats < 1`) | `400 Bad Request` |
 | Flight number unknown           | `404 Not Found`    |
 | Not enough seats left           | `409 Conflict`     |
+| Same `Idempotency-Key` reused with a *different* body | `422 Unprocessable Entity` |
 
 ### Example requests
 
@@ -287,15 +298,13 @@ also makes the rule correct even if the app restarts mid-flight.
 
 ### 2. Idempotency-store hardening
 **What's there now:** an `Idempotency-Key` maps to a booking in an in-process map.
-**Two gaps I'm aware of:**
-- The map **grows forever** — there's no expiry. I'd add a **TTL/eviction** (keys
-  only need to live as long as a client might retry, e.g. 24h).
-- If a client **reuses the same key with a *different* body** (e.g. different flight
-  or seat count), the current code silently returns the original booking. Stricter
-  behaviour is to detect the mismatch and return **422 Unprocessable Entity**, so a
-  key can't be accidentally reused for a different request.
-**What I'd do:** store the request fingerprint alongside the key, add a TTL, and (when
-multi-instance) move it to a shared store — see *Scaling beyond a single instance*.
+**What's already handled:** reusing a key with a *different* request body is
+rejected with **422 Unprocessable Entity** (the store keeps a fingerprint of the
+original request), so a key can't be accidentally reused for a different booking.
+**Remaining gap:** the map **grows forever** — there's no expiry. I'd add a
+**TTL/eviction** (keys only need to live as long as a client might retry, e.g. 24h)
+and, when multi-instance, move it to a shared store — see *Scaling beyond a single
+instance*.
 
 ### 3. Booking lifecycle (more of the domain)
 **What's there now:** you can only create a booking.

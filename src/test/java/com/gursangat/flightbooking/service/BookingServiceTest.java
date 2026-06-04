@@ -1,6 +1,7 @@
 package com.gursangat.flightbooking.service;
 
 import com.gursangat.flightbooking.exception.FlightNotFoundException;
+import com.gursangat.flightbooking.exception.IdempotencyConflictException;
 import com.gursangat.flightbooking.exception.SeatsUnavailableException;
 import com.gursangat.flightbooking.model.Booking;
 import com.gursangat.flightbooking.model.Flight;
@@ -83,6 +84,18 @@ class BookingServiceTest {
 
         // Only the first booking consumed seats: 50 - 2 = 48 remain, not 46.
         assertEquals(48, flightRepository.findByFlightNumber("AI202").orElseThrow().getAvailableSeats());
+    }
+
+    @Test
+    void sameKeyWithDifferentBodyIsRejected() {
+        bookingService.book("AI202", "Alice", 1, "dup-key");
+
+        // Same key, different passenger -> must not silently replay Alice's booking.
+        assertThrows(IdempotencyConflictException.class,
+                () -> bookingService.book("AI202", "Bob", 1, "dup-key"));
+
+        // The mismatched second request consumed no seats.
+        assertEquals(49, flightRepository.findByFlightNumber("AI202").orElseThrow().getAvailableSeats());
     }
 
     @Test

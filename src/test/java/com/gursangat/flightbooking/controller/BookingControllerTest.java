@@ -72,6 +72,22 @@ class BookingControllerTest {
     }
 
     @Test
+    void reusingIdempotencyKeyWithDifferentBodyReturns422() throws Exception {
+        mockMvc.perform(post("/api/bookings")
+                        .header("Idempotency-Key", "reuse-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"flightNumber\":\"AI404\",\"passengerName\":\"Alice\",\"seats\":1}"))
+                .andExpect(status().isCreated());
+
+        // Same key, different seat count -> 422 Unprocessable Entity
+        mockMvc.perform(post("/api/bookings")
+                        .header("Idempotency-Key", "reuse-key")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"flightNumber\":\"AI404\",\"passengerName\":\"Alice\",\"seats\":2}"))
+                .andExpect(status().isUnprocessableEntity());
+    }
+
+    @Test
     void returns409WhenFlightIsFull() throws Exception {
         // AI303 has capacity 1 — first booking succeeds, second conflicts
         mockMvc.perform(post("/api/bookings")
